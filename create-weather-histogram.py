@@ -217,16 +217,8 @@ def CreateHistogram(forecastData,outputFile,buckets,argsparse):
     Create histogram bin file (tsv)
     Returns: file and prints to console (option)
     """
-    #TODO - print results to console and output (use quiet mode if asked) to tsv file
-    # print("-------------------------------------")
-    # print("--------- HISTOGRAM HERE STUB--------")
-    # print("-------------------------------------")
-    # data = [81.18, 74.43, 69.75, 69.66, 42.04, 61.59, 35.42, 68.95, 65.52, 64.18, 
-    # 74.43, 50.09, 66.61, 39.06, 58.35, 46.74, 77.41, 74.75, 73]
-    # bins_requested = 5
-
+    #TODO - send this to a tab delimited file (tsv); if have time might offer zip option in args
     freq, bins  = numpy.histogram(forecastData,buckets)
-    
     binCount = (len(bins) - 1)
     print("Min\tMax\tFreq\n")
     for index,item in enumerate(bins, start=0):
