@@ -4,4 +4,3 @@
 ###### Needed for create-weather-histogram ######
 requests
 numpy
-geoip2

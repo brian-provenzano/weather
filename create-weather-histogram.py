@@ -8,13 +8,8 @@ Creates a tsv file of histogram bins based on logfile input
 
 Third party APIs (or databases) used
 -----------------------
-1 - GeoLite2 location database (download) and py lib/mod: 
-    - https://dev.maxmind.com/geoip/geoip2/geolite2/
-    - http://geolite.maxmind.com/download/geoip/database/GeoLite2-City.tar.gz
-    - https://github.com/maxmind/GeoIP2-python (library/module)
-2 - openweathermap.org - get weather based on location (lat/long/city/state etc)
-    -API docs: https://openweathermap.org/current
-    -API limits and tiers: https://openweathermap.org/price
+1 - Weatherunderground API:
+    - https://www.wunderground.com/weather/api/d/docs?d=index
 
 Usage:
 -----------------------
@@ -23,7 +18,6 @@ create-weather-hist.py <input-logfilename> <output-filename> <hist-buckets>
 BJP - 4/12/18
 
 TODOs - future features?
-- Paid tier API ; bulk uploads up to reduce web service calls
 - Option to grab latest geopIP db and decompress to ensure current info
 - option to zip resultant tsv output file; remove header option
 - quiet mode to remove all console messages (server mode) - store in local std log instead
@@ -31,32 +25,27 @@ TODOs - future features?
 
 #--3rd party - see readme for pip install
 import requests
-import geoip2.database
 import numpy
 
 #--std mod/libs
-import time , datetime
+import time, datetime
 import socket, sys, os
 import json
 import csv
 import argparse
 from enum import Enum
-#from subprocess import call
-#from pathlib import Path
 
 ##########################################
 #- Modify the options below as needed
 ##########################################
 
-#-IP -> Location database
-GEOIP2_DB = "files/GeoLite2-City-20180403.mmdb"
 #-Weather APIs
-OPENWEATHER_BASEURL = "http://api.openweathermap.org/data/2.5/forecast"
-OPENWEATHER_APIKEY = "a666357bdc452dd7a0527706873fe73c" #appid - free tier
-OPENWEATHER_UNITS = "imperial" #Options: imperial, standard, metric
-#These are passed to be safe on rate limits (number of calls allowed per minute by free tier is 60)
-OPENWEATHER_RATE_SLEEP_SECONDS = 1 #seconds to wait between calls to be nice (docs warn on velocity)
-OPENWEATHER_CONNECT_TIMEOUT = 5 # wait no longer than 5 seconds for a response (avg is less than second)
+WUNDERGROUND_BASEURL = "http://api.wunderground.com/api/{0}/forecast/q/autoip.json"
+WUNDERGROUND_APIKEY = ""
+#These are passed to be safe on rate limits (free tier: 10 per minute; 500 per day)
+WUNDERGROUND_RATE_SLEEP_SECONDS = 7 #seconds to wait between calls to fail within limits
+WUNDERGROUND_RATE_HARD_LIMIT = 500 #per day limit (so its our per run limit)
+WUNDERGROUND_CONNECT_TIMEOUT = 5 # wait no longer than 5 seconds for a response (avg is less than second)
 
 ##########################################
 #- END - Do not modify below here!!!
@@ -91,8 +80,7 @@ def Main():
 
     try:
         ipAddressList = ParseLogFile(logfile,args)
-        locationsList = GetLocations(ipAddressList,args)
-        weatherForecastList = GetWeatherForecast(locationsList,args)
+        weatherForecastList = GetWeatherForecast(ipAddressList,args)
         CreateHistogram(weatherForecastList,outputFile,numberBuckets,args)
 
     except ValueError as ve:
@@ -126,74 +114,45 @@ def ParseLogFile(logFile, argparse):
                         PrintMessage(MessageType.ERROR,
                             "Invalid IP Address found at line [ {0} ]!  Skipping line... "\
                             "Please double check the logfile!".format(linecount))
-
+                            
                     ipAddresses.append(field)
 
-            # ipAddressCount = len(ipAddresses)
-            ipAddressFailures = failures
-            ipAddressAttempts = len(ipList)
-
+    ipAddressFailures = failures
+    ipAddressAttempts = len(ipList)
     timer.stop()
     PrintSummary(ipAddresses,ipAddressAttempts,ipAddressFailures, timer.PrintSummary("getting IPs from local logfile"),
             "Log file IPs","Processing IPs From Local Log File",argparse.debug)
 
     return ipAddresses
 
-
-def GetLocations(ipAddressList, argparse):
+def GetWeatherForecast(ipAddressList,argparse):
     """ 
-    Get locations from list of IPs using geoip2 database - lat and long  
-    Returns: locations, locationsCount
-    """
-    timer = SimpleTimer()
-    locations = []
-    failures = 0
-    with geoip2.database.Reader(GEOIP2_DB) as reader:
-        for item in ipAddressList:
-            try:
-                response = reader.city(item)
-                loc = [response.location.latitude,response.location.longitude]
-                locations.append(loc)
-            except:
-                print()
-                PrintMessage(MessageType.ERROR,
-                "IP Address [{0}] not found in database!  Skipping location...!".format(item))
-                failures += 1
-
-    locationsFailures = failures
-    locationsAttempted = len(ipAddressList)
-
-    timer.stop()
-    PrintSummary(locations,locationsAttempted,locationsFailures,timer.PrintSummary("getting locations from local db"),
-        "Locations Lookup DB", "Looking Up Locations In Local Location DB",argparse.debug)
-
-    return locations
-
-
-def GetWeatherForecast(locationsList,argparse):
-    """ 
-    Get Weather forecast for next day using openweathermap API  
+    Get Weather forecast for next day 
     Returns: forecastList
+    TODO - need to see what rate limit looks like on response; break loop on limit hit
     """
-    locationsCount = len(locationsList)
+    locationsCount = len(ipAddressList)
+    rateEstimate = (WUNDERGROUND_RATE_SLEEP_SECONDS)
     PrintMessage(MessageType.INFO,
         "Getting forecast info from service for [{0}] locations. "\
-        "This will take approximately [{1}]".format(locationsCount, TimeFromFloat(locationsCount* 1.5)))
+        "This will take approximately [{1}]".format(locationsCount, TimeFromFloat(locationsCount * rateEstimate)))
 
     if (locationsCount > 500):
-        PrintMessage(MessageType.INFO,"NOTE: This is a large dataset!  You might want to go get a cup of coffee...")
+        PrintMessage(MessageType.INFO,"NOTE: This is a large dataset! We will hit the rate limit depending on service tier "\
+        "You might want to go get a cup of coffee...")
     
     timer = SimpleTimer()
     forecastList = []
     failures = 0
-    for count,item in enumerate(locationsList, start=1):
-        try:
-            payload = {"appid":OPENWEATHER_APIKEY,"lat":item[0],"lon":item[1],"units":OPENWEATHER_UNITS}
-            response = requests.get(OPENWEATHER_BASEURL, params=payload, timeout=5)
+    for count,item in enumerate(ipAddressList, start=1):
+        try: 
+            url = WUNDERGROUND_BASEURL.format(WUNDERGROUND_APIKEY)
+            payload = {"geo_ip":item}
+            response = requests.get(url, params=payload, timeout=5)
             response.raise_for_status()
             if response.status_code == 200:
                 jsonResult = response.json()
-                forecastList.append(jsonResult["list"][0]["main"]["temp_max"])
+                forecastList.append(int(jsonResult["forecast"]["simpleforecast"]["forecastday"][1]["high"]["fahrenheit"]))
                 PrintProgress(locationsCount,count,timer.getElapsed())
             else:
                 failures += 1
@@ -206,11 +165,10 @@ def GetWeatherForecast(locationsList,argparse):
             "Trying to obtain forecast for location : Timeout / httperror waiting for server connection / response", re)
 
         #stay within rate - not perfect, but should be ok for this...
-        time.sleep(OPENWEATHER_RATE_SLEEP_SECONDS)
+        time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
     
     forecastFailures = failures   
     forecastAttempts = (locationsCount)
-
     timer.stop()
     PrintSummary(forecastList,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
         "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", argparse.debug)
@@ -241,7 +199,7 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
     header = ['bucketMin','bucketMax','count']
     with open(outputFile, "w") as outfile:
         csvwriter = csv.writer(outfile, delimiter='\t')
-        csvwriter.writerow(header) #header
+        csvwriter.writerow(header)
         csvwriter.writerows(tsvdata)
 
     timer.stop()
@@ -254,7 +212,6 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
 ################################
 # - Utility functions / classes
 ################################
-
 class MessageType(Enum):
     """ Message type enumeration"""
     INVALID = 0
@@ -299,7 +256,7 @@ def TimeFromFloat(f):
 
 
 def PrintProgress(total, current,currentElapsed):
-    #print("->")
+    print("-> Working...(Throttled due to rate limit)")
     if(not current % 5):
         PrintMessage(MessageType.INFO,
             "Processing [{0}] of [{1}] - [{2}] percent complete - Elapsed time [{3}]"\
