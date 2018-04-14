@@ -21,6 +21,12 @@ Usage:
 create-weather-hist.py <input-logfilename> <output-filename> <hist-buckets>
 
 BJP - 4/12/18
+
+TODOs - future features?
+- Paid tier API ; bulk uploads up to reduce web service calls
+- Option to grab latest geopIP db and decompress to ensure current info
+- option to zip resultant tsv output file; remove header option
+- quiet mode to remove all console messages (server mode) - store in local std log instead
 """
 
 #--3rd party - see readme for pip install
@@ -30,10 +36,10 @@ import numpy
 
 #--std mod/libs
 import time , datetime
-import json
-import zipfile
-import argparse
 import socket, sys, os
+import json
+import csv
+import argparse
 from enum import Enum
 #from subprocess import call
 #from pathlib import Path
@@ -46,7 +52,7 @@ from enum import Enum
 GEOIP2_DB = "files/GeoLite2-City-20180403.mmdb"
 #-Weather APIs
 OPENWEATHER_BASEURL = "http://api.openweathermap.org/data/2.5/forecast"
-OPENWEATHER_APIKEY = "" #appid - free tier
+OPENWEATHER_APIKEY = "a666357bdc452dd7a0527706873fe73c" #appid - free tier
 OPENWEATHER_UNITS = "imperial" #Options: imperial, standard, metric
 #These are passed to be safe on rate limits (number of calls allowed per minute by free tier is 60)
 OPENWEATHER_RATE_SLEEP_SECONDS = 1 #seconds to wait between calls to be nice (docs warn on velocity)
@@ -74,8 +80,8 @@ def Main():
     #-informational args
     parser.add_argument("-d", "--debug", action="store_true", 
             help="Debug mode - show more informational messages for debugging")
-    parser.add_argument("-q", "--quiet", action="store_true", 
-            help="Do not print histogram to console.  Output to file only.")
+    # parser.add_argument("-q", "--quiet", action="store_true", 
+    #         help="Do not print to console.  Output messages to a standard logfile.")
     parser.add_argument("-v", "--version", action="version", version="1.0")
     args = parser.parse_args()
 
@@ -181,8 +187,8 @@ def GetWeatherForecast(locationsList,argparse):
     forecastList = []
     failures = 0
     for count,item in enumerate(locationsList, start=1):
-        payload = {"appid":OPENWEATHER_APIKEY,"lat":item[0],"lon":item[1],"units":OPENWEATHER_UNITS}
         try:
+            payload = {"appid":OPENWEATHER_APIKEY,"lat":item[0],"lon":item[1],"units":OPENWEATHER_UNITS}
             response = requests.get(OPENWEATHER_BASEURL, params=payload, timeout=5)
             response.raise_for_status()
             if response.status_code == 200:
@@ -212,21 +218,37 @@ def GetWeatherForecast(locationsList,argparse):
     return forecastList
 
 
-def CreateHistogram(forecastData,outputFile,buckets,argsparse):
+def CreateHistogram(forecastData,outputFile,buckets,argparse):
     """ 
     Create histogram bin file (tsv)
     Returns: file and prints to console (option)
     """
-    #TODO - send this to a tab delimited file (tsv); if have time might offer zip option in args
-    freq, bins  = numpy.histogram(forecastData,buckets)
+  
+    timer = SimpleTimer()
+    #create histogram
+    numpy.set_printoptions(precision=2)
+    freq, bins = numpy.histogram(forecastData,buckets)
+
+    #floatformatter = lambda x: "%.2f" % x #test
+    #find bucket min/max based on edges etc; arrange 
+    #precision for display - accept float precision on weather data
+    tsvdata = []
     binCount = (len(bins) - 1)
-    print("Min\tMax\tFreq\n")
     for index,item in enumerate(bins, start=0):
         if index != binCount:
-            print(item,end="\t")
-            print(bins[index+1],end="\t")
-            print(freq[index],end="")
-            print("\n")
+            tsvdata.append([FloatFormatter(item),FloatFormatter(bins[index+1]),freq[index]])
+
+    header = ['bucketMin','bucketMax','count']
+    with open(outputFile, "w") as outfile:
+        csvwriter = csv.writer(outfile, delimiter='\t')
+        csvwriter.writerow(header) #header
+        csvwriter.writerows(tsvdata)
+
+    timer.stop()
+    PrintSimpleSummary(tsvdata,timer.PrintSummary("writing tsv file {}".format(outputFile)),
+        "TSV file","Creating Histogram TSV File", argparse.debug)
+    print("-----------------------------------------")
+    print("\n -> Process Complete!!!")
 
 
 ################################
@@ -269,6 +291,9 @@ def CalculatePercentage(x,y):
     return ('{:.2f}%'.format(p))
 
 
+def FloatFormatter(f):
+    return "%.2f" % f
+
 def TimeFromFloat(f):
     return time.strftime("%H:%M:%S", time.gmtime(f))
 
@@ -285,20 +310,25 @@ def PrintMessage(messageType,friendlyMessage,detailMessage="None"):
     print("[{0}] - {1} - More Details [{2}]".format(str(messageType.name),friendlyMessage,detailMessage))
 
 
+def PrintSimpleSummary(data,timeSummary,description,title, debug):
+        print("-----------------------------------------")
+        print("- STEP SUMMARY : [{0}] ".format(title))
+        print(timeSummary)
+        print("-----------------------------------------")
+        if debug:
+            PrintMessage(MessageType.DEBUG,"{0} data [{1}]".format(description,data))
+
+
 def PrintSummary(data,attempts,failures,timeSummary,description,title, debug):
         print("-----------------------------------------")
         print("- STEP SUMMARY : [{0}] ".format(title))
-        if debug:
-            print("- {0} data [{1}]".format(description,data))
         print("- {0} attempted [{1}]".format(description,attempts))
         print("- {0} failures [{1}]".format(description,failures))
         print("- {0} failed: [{1}]".format(description,CalculatePercentage(failures,attempts)))
-        print(timeSummary)
+        print("- {0}".format(timeSummary))
         print("-----------------------------------------")
-
-def PrintFinalSummary():
-    #TODO -
-    pass
+        if debug:
+            PrintMessage(MessageType.DEBUG,"{0} data [{1}]".format(description,data))
 
 
 if __name__ == '__main__':
