@@ -42,7 +42,7 @@ from enum import Enum
 
 #-Weather APIs
 WUNDERGROUND_BASEURL = "http://api.wunderground.com/api/{0}/forecast/q/autoip.json"
-WUNDERGROUND_APIKEY = ""
+WUNDERGROUND_APIKEY = "96309e63c7f497b2"
 #These are passed to be safe on rate limits (free tier: 10 per minute; 500 per day)
 WUNDERGROUND_RATE_SLEEP_SECONDS = 7 #seconds to wait between calls to fail within limits (free tier set to 6-7!!)
 WUNDERGROUND_RATE_HARD_LIMIT = 500 #per day limit (so its our per run limit)
