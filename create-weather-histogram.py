@@ -18,9 +18,10 @@ create-weather-hist.py <input-logfilename> <output-filename> <hist-buckets>
 BJP - 4/12/18
 
 TODOs - future features?
-- Option to grab latest geopIP db and decompress to ensure current info
-- option to zip resultant tsv output file; remove header option
-- quiet mode to remove all console messages (server mode) - store in local std log instead
+- option to zip resultant tsv output file
+- option remove header in tsv
+- 'quiet' mode to remove all console messages (server mode) - store in local std log instead
+
 """
 
 #--3rd party - see readme for pip install
