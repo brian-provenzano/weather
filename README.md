@@ -6,7 +6,25 @@ Creates a tsv file of histogram bins of weather forecast based on logfile input 
 
 ## Usage
 ```
-create-weather-hist.py <input-logfilename> <output-filename> <hist-buckets>
+usage: create-weather-histogram [-h] [-d] [-v] logfile outputfile buckets
+
+Creates a tsv file of histogram bins of weather forecasts based on logfile
+location input (containing IP addresses) and requested bin size. Uses 3rd
+party web APIs (weatherunderground).Please see source of this file to set
+options appropriately (keys, etc)
+
+positional arguments:
+  logfile        Log source file containing locations to find weather forecast
+                 data for
+  outputfile     Name of the file to output the histogram data to in tsv
+                 format
+  buckets        Number of buckets for histogram
+
+optional arguments:
+  -h, --help     show this help message and exit
+  -d, --debug    Debug mode - show more informational messages for debugging
+  -v, --version  show program's version number and exit
+
 ```
 
 ## Initial Setup
