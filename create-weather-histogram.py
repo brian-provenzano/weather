@@ -21,7 +21,8 @@ TODOs - future features?
 - option to zip resultant tsv output file
 - option remove header in tsv
 - 'quiet' mode to remove all console messages (server mode) - store in local std log instead
-
+- refactor to create messaging class (remove all the printMessage calls, more DRYish)
+- caching mechanism for IP lookups
 """
 
 #--3rd party - see readme for pip install
@@ -30,7 +31,8 @@ import numpy
 
 #--std mod/libs
 import time, datetime
-import socket, sys, os
+import ipaddress 
+import sys, os
 import json
 import csv
 import argparse
@@ -42,7 +44,7 @@ from enum import Enum
 
 #-Weather APIs
 WUNDERGROUND_BASEURL = "http://api.wunderground.com/api/{0}/forecast/q/autoip.json"
-WUNDERGROUND_APIKEY = "96309e63c7f497b2"
+WUNDERGROUND_APIKEY = ""
 #These are passed to be safe on rate limits (free tier: 10 per minute; 500 per day)
 WUNDERGROUND_RATE_SLEEP_SECONDS = 7 #seconds to wait between calls to fail within limits (free tier set to 6-7!!)
 WUNDERGROUND_RATE_HARD_LIMIT = 500 #per day limit (so its our per run limit)
@@ -102,7 +104,6 @@ def ParseLogFile(logFile, argparse):
     timer = SimpleTimer()
     with open(logFile, "r") as f:
         ipList = [line.strip("\n") for line in f]
-        # TODO - consider a tuple for speed
         ipAddresses = []
         failures = 0
         for linecount,item in enumerate(ipList, start=1):
@@ -110,28 +111,41 @@ def ParseLogFile(logFile, argparse):
                 #ip address is in 23rd position (zero based)
                 if (count == 23):
                     try:
-                        socket.inet_aton(field)
-                    except socket.error:
+                        #detect if we have X-Forwarded-For style IP format in the field and handle it
+                        #e.g. 121.7.37.91, 10.168.83.120
+                        if "," in field:
+                            alist = field.split(",")
+                            for ip in alist:
+                                ipAddress = ipaddress.ip_address(ip.strip())
+                                if IsPublicIPAddress(ipAddress,linecount):
+                                    ipAddresses.append(ip.strip())
+                                else:
+                                    failures += 1
+                        else:
+                            ipAddress = ipaddress.ip_address(field)
+                            if IsPublicIPAddress(ipAddress,linecount):
+                                ipAddresses.append(field)
+                            else:
+                                failures += 1
+                    except ValueError as ve:
                         failures += 1
                         PrintMessage(MessageType.ERROR,
-                            "Invalid IP Address found at line [ {0} ]!  Skipping line... "\
-                            "Please double check the logfile!".format(linecount))
-                            
-                    ipAddresses.append(field)
+                            "Invalid IP Address [{0}] found at line [ {1} ]!  Skipping line... "\
+                            "Please double check the logfile!".format(field,linecount),ve)
 
     ipAddressFailures = failures
     ipAddressAttempts = len(ipList)
-    timer.stop()
+    timer.Stop()
     PrintSummary(ipAddresses,ipAddressAttempts,ipAddressFailures, timer.PrintSummary("getting IPs from local logfile"),
             "Log file IPs","Processing IPs From Local Log File",argparse.debug)
 
     return ipAddresses
 
+
 def GetWeatherForecast(ipAddressList,argparse):
     """ 
     Get Weather forecast for next day 
     Returns: forecastList
-    TODO - need to see what rate limit looks like on response; break loop on limit hit
     """
     locationsCount = len(ipAddressList)
     rateEstimate = (WUNDERGROUND_RATE_SLEEP_SECONDS)
@@ -148,12 +162,11 @@ def GetWeatherForecast(ipAddressList,argparse):
     timer = SimpleTimer()
     forecastList = []
     failures = 0
-    #must not be zero padded as wunderground according to docs returns no pad
+    #must not be zero padded as wunderground API according to docs returns no pad on day
     tomorrow = int((datetime.date.today() + datetime.timedelta(days=1)).strftime('%-d'))
 
     for count,item in enumerate(ipAddressList, start=1):
         try: 
-
             if count == WUNDERGROUND_RATE_HARD_LIMIT:
                 PrintMessage(MessageType.ERROR,
                 "You are hitting (or are about to hit) the hard daily limit for the wunderground service tier! "\
@@ -162,8 +175,7 @@ def GetWeatherForecast(ipAddressList,argparse):
                 break
 
             url = WUNDERGROUND_BASEURL.format(WUNDERGROUND_APIKEY)
-            payload = {"geo_ip":item}
-            response = requests.get(url, params=payload, timeout=5)
+            response = requests.get(url, params={"geo_ip":item}, timeout=WUNDERGROUND_CONNECT_TIMEOUT)
             response.raise_for_status()
             if response.status_code == 200:
                 jsonResult = response.json()
@@ -171,10 +183,10 @@ def GetWeatherForecast(ipAddressList,argparse):
                     PrintMessage(MessageType.DEBUG,"wunderground web API response",jsonResult)
                 
                 #check for errors - especially rate limit errors
-                #docs suck on errors, but types here: 
+                #docs suck on defining errors (there are none), but types appear here in a forum post: 
                 # https://apicommunity.wunderground.com/weatherapi/topics/error-code-list
                 if jsonResult["response"].get("error"):
-                    #supposed to mean rate limit exceeded
+                    #"invalidkey" - supposed to mean rate limit exceeded; break
                     if jsonResult["response"]["error"]["type"] == "invalidkey":
                         failures += 1
                         PrintMessage(MessageType.ERROR,
@@ -191,7 +203,7 @@ def GetWeatherForecast(ipAddressList,argparse):
                             forecastList.append(int(jitem["high"]["fahrenheit"]))
                             break
 
-                PrintProgress(locationsCount,count,timer.getElapsed())
+                PrintProgress(locationsCount,count,timer.GetElapsed())
             else:
                 failures += 1
                 PrintMessage(MessageType.ERROR,
@@ -199,7 +211,7 @@ def GetWeatherForecast(ipAddressList,argparse):
         
         except KeyError as ke:
             failures += 1
-            #KeyErrors could point to weatherunderground rate limits; break out
+            #KeyErrors could point to weatherunderground rate limits (docs are unclear); break out just in case
             PrintMessage(MessageType.ERROR,
                 "Unrecoverable error with weather service API", ke)
             break
@@ -211,13 +223,12 @@ def GetWeatherForecast(ipAddressList,argparse):
                 "Trying to obtain forecast for location : Timeout / httperror waiting"\
                 "for server connection / response", re)
 
-
-        #stay within rate - not perfect, but should be ok for this...
+        #stay within rate - not perfect, but should be ok for this
         time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
     
     forecastFailures = failures   
-    forecastAttempts = (locationsCount)
-    timer.stop()
+    forecastAttempts = locationsCount
+    timer.Stop()
     PrintSummary(forecastList,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
         "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", argparse.debug)
 
@@ -235,7 +246,6 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
     numpy.set_printoptions(precision=2)
     freq, bins = numpy.histogram(forecastData,buckets)
 
-    #floatformatter = lambda x: "%.2f" % x #test
     #find bucket min/max based on edges etc; arrange 
     #precision for display - accept float precision on weather data
     tsvdata = []
@@ -250,7 +260,7 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
         csvwriter.writerow(header)
         csvwriter.writerows(tsvdata)
 
-    timer.stop()
+    timer.Stop()
     PrintSimpleSummary(tsvdata,timer.PrintSummary("writing tsv file {}".format(outputFile)),
         "TSV file","Creating Histogram TSV File", argparse.debug)
     print("-----------------------------------------")
@@ -260,6 +270,21 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
 ################################
 # - Utility functions / classes
 ################################
+
+def IsPublicIPAddress(ipAddress, currentLine):
+    """ 
+    Check IP Address is private
+    Returns: validip
+    """
+    isValidIP = True
+    if ipAddress.is_private:
+        isValidIP = False
+        PrintMessage(MessageType.ERROR,
+            "Invalid IP Address [{0}] found at line [ {1} ]!  Skipping line... "\
+            "Please double check the logfile!".format(str(ipAddress),currentLine),"Is Private IP Address")
+    return isValidIP
+
+
 class MessageType(Enum):
     """ Message type enumeration"""
     INVALID = 0
@@ -267,22 +292,23 @@ class MessageType(Enum):
     INFO = 2
     ERROR = 3
 
+
 class SimpleTimer(object):
     """ simple timer for util purposes """
     import time
     startTime = 0.0
-    stopTime = 0.0
+    StopTime = 0.0
     elapsed = 0.0
 
     def __init__(self):
         self.startTime = time.time()
 
-    def stop(self):
-        self.stopTime = time.time()
+    def Stop(self):
+        self.StopTime = time.time()
 
-    def getElapsed(self):
-        self.stopTime = time.time()
-        self.elapsed = (self.stopTime - self.startTime)
+    def GetElapsed(self):
+        self.StopTime = time.time()
+        self.elapsed = (self.StopTime - self.startTime)
         return self.elapsed
 
     def PrintSummary(self, doingWhat="do something"):
@@ -299,14 +325,15 @@ def CalculatePercentage(x,y):
 def FloatFormatter(f):
     return "%.2f" % f
 
+
 def TimeFromFloat(f):
     return time.strftime("%H:%M:%S", time.gmtime(f))
+
 
 def Check(url,apikey):
     """ 
     simple check to make sure things are in order.  Namely have an API key :) 
     Can extend later for more pre-run checks
-    
     """
     if not url:
         raise ValueError("Weather API url is empty.  Please check your config!")
