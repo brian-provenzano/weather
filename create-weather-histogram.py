@@ -23,6 +23,7 @@ TODOs - future features?
 - 'quiet' mode to remove all console messages (server mode) - store in local std log instead
 - refactor to create messaging class (remove all the printMessage calls, more DRYish)
 - caching mechanism for IP lookups
+- retries on connection issues or non HTTP 200 returns
 """
 
 #--3rd party - see readme for pip install
@@ -236,7 +237,7 @@ def GetWeatherForecast(ipAddressList,argparse):
             failures += 1
             PrintMessage(MessageType.ERROR, "Trying to obtain forecast for location : Timeout / httperror waiting"\
                 "for server connection / response", re)
-            #stay within rate - not perfect, but should be ok for this
+            #if we have an exception, I'd like to wait a little for the next try on the next item
             time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
 
     forecastFailures = failures
