@@ -147,11 +147,12 @@ def GetWeatherForecast(ipAddressList,argparse):
     Get Weather forecast for next day 
     Returns: forecastList
     """
+
     locationsCount = len(ipAddressList)
-    rateEstimate = (WUNDERGROUND_RATE_SLEEP_SECONDS)
+    estimate = TimeFromFloat(locationsCount * WUNDERGROUND_RATE_SLEEP_SECONDS)
     PrintMessage(MessageType.INFO,
         "Getting forecast info from service for [{0}] locations. "\
-        "This will take approximately [{1}]".format(locationsCount, TimeFromFloat(locationsCount * rateEstimate)))
+        "This will take approximately [{1}]".format(locationsCount, estimate))
 
     if (locationsCount > 500):
         PrintMessage(MessageType.INFO,"NOTE: This is a large dataset! "\
@@ -161,7 +162,9 @@ def GetWeatherForecast(ipAddressList,argparse):
     
     timer = SimpleTimer()
     forecastList = []
+    alreadyForecasted = {}
     failures = 0
+    skipped = 0
     #must not be zero padded as wunderground API according to docs returns no pad on day
     tomorrow = int((datetime.date.today() + datetime.timedelta(days=1)).strftime('%-d'))
 
@@ -174,63 +177,75 @@ def GetWeatherForecast(ipAddressList,argparse):
                 "Limit is set as WUNDERGROUND_RATE_HARD_LIMIT - currently = [ {0} ]".format(WUNDERGROUND_RATE_HARD_LIMIT))
                 break
 
-            url = WUNDERGROUND_BASEURL.format(WUNDERGROUND_APIKEY)
-            response = requests.get(url, params={"geo_ip":item}, timeout=WUNDERGROUND_CONNECT_TIMEOUT)
-            response.raise_for_status()
-            if response.status_code == 200:
-                jsonResult = response.json()
-                if argparse.debug:
-                    PrintMessage(MessageType.DEBUG,"wunderground web API response",jsonResult)
-                
-                #check for errors - especially rate limit errors
-                #docs suck on defining errors (there are none), but types appear here in a forum post: 
-                # https://apicommunity.wunderground.com/weatherapi/topics/error-code-list
-                if jsonResult["response"].get("error"):
-                    #"invalidkey" - supposed to mean rate limit exceeded; break
-                    if jsonResult["response"]["error"]["type"] == "invalidkey":
-                        failures += 1
-                        PrintMessage(MessageType.ERROR,
-                        "Rate limit exceeded!!  Stopping processing of new locations for weather forecast!")
-                        break
-                    elif jsonResult["response"]["error"]["type"] == "querynotfound":
-                        failures += 1
-                        PrintMessage(MessageType.ERROR,
-                        "Trying to obtain forecast for location : "\
-                        "Location not found via weather API. Skipping...")
-                else:
-                    for jcount,jitem in enumerate(jsonResult["forecast"]["simpleforecast"]["forecastday"], start=0):
-                        if(jitem["date"]["day"] == tomorrow):
-                            forecastList.append(int(jitem["high"]["fahrenheit"]))
-                            break
-
-                PrintProgress(locationsCount,count,timer.GetElapsed())
+            #if already located/forecasted the IP; skip the web API call; but still add to temp data
+            if item in alreadyForecasted:
+                forecastList.append(alreadyForecasted.get(item))
+                PrintProgress(locationsCount,count,timer.GetElapsed(),True)
+                skipped += 1
             else:
-                failures += 1
-                PrintMessage(MessageType.ERROR,
-                "Server did not return status 200 - returned [{0}] ".format(response.status_code))
-        
+                url = WUNDERGROUND_BASEURL.format(WUNDERGROUND_APIKEY)
+                response = requests.get(url, params={"geo_ip":item}, timeout=WUNDERGROUND_CONNECT_TIMEOUT)
+                response.raise_for_status()
+                if response.status_code == 200:
+                    jsonResult = response.json()
+                    if argparse.debug:
+                        PrintMessage(MessageType.DEBUG,"wunderground web API response",jsonResult)
+                    
+                    #check for errors - especially rate limit errors
+                    #docs suck on defining errors (there are none), but types appear here in a forum post: 
+                    # https://apicommunity.wunderground.com/weatherapi/topics/error-code-list
+                    if jsonResult["response"].get("error"):
+                        #"invalidkey" - supposed to mean rate limit exceeded; break
+                        if jsonResult["response"]["error"]["type"] == "invalidkey":
+                            failures += 1
+                            PrintMessage(MessageType.ERROR,
+                            "Rate limit exceeded!!  Stopping processing of new locations for weather forecast!")
+                            break
+                        elif jsonResult["response"]["error"]["type"] == "querynotfound":
+                            failures += 1
+                            PrintMessage(MessageType.ERROR,
+                            "Trying to obtain forecast for location : "\
+                            "Location not found via weather API. Skipping...")
+                    else:
+                        #lookup high forecast in Fahrenheit from 5 day forecast json results
+                        #order is not assumed, so loop and check based on date (tomorrow)
+                        for jcount,jitem in enumerate(jsonResult["forecast"]["simpleforecast"]["forecastday"], start=0):
+                            if(jitem["date"]["day"] == tomorrow):
+                                forecastList.append(int(jitem["high"]["fahrenheit"]))
+                                if item not in alreadyForecasted:
+                                    alreadyForecasted[item] = int(jitem["high"]["fahrenheit"])
+
+                                break
+
+                    PrintProgress(locationsCount,count,timer.GetElapsed())
+                    #stay within rate - not perfect, but should be ok for this
+                    time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
+                else:
+                    failures += 1
+                    PrintMessage(MessageType.ERROR,
+                    "Server did not return status 200 - returned [{0}] ".format(response.status_code))
+
+        #KeyErrors could point to weatherunderground rate limits (docs are unclear); break out just in case
         except KeyError as ke:
             failures += 1
-            #KeyErrors could point to weatherunderground rate limits (docs are unclear); break out just in case
-            PrintMessage(MessageType.ERROR,
-                "Unrecoverable error with weather service API", ke)
+            PrintMessage(MessageType.ERROR, "Unrecoverable error with weather service API", ke)
             break
 
-        #throw the base exp so we can continue on any error from requests
+        #throw the base request ex so we can continue on any error from requests module
         except requests.exceptions.RequestException as re:
             failures += 1
-            PrintMessage(MessageType.ERROR,
-                "Trying to obtain forecast for location : Timeout / httperror waiting"\
+            PrintMessage(MessageType.ERROR, "Trying to obtain forecast for location : Timeout / httperror waiting"\
                 "for server connection / response", re)
+            #stay within rate - not perfect, but should be ok for this
+            time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
 
-        #stay within rate - not perfect, but should be ok for this
-        time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
-    
-    forecastFailures = failures   
-    forecastAttempts = locationsCount
+    forecastFailures = failures
+    forecastSkipped = skipped
+    forecastAttempts = (locationsCount - skipped)
     timer.Stop()
     PrintSummary(forecastList,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
-        "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", argparse.debug)
+        "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", 
+        argparse.debug,forecastSkipped)
 
     return forecastList
 
@@ -341,9 +356,12 @@ def Check(url,apikey):
         raise ValueError("Weather API key is empty.  Please check your config!")
 
 
-def PrintProgress(total, current,currentElapsed):
+def PrintProgress(total, current,currentElapsed, skip=False):
     """ prints progress for web calls """
-    print("-> Working...(Throttled due to rate limit)")
+    if skip:
+        print("-> Skipping Forecast API call - this IP address has already been located/forecasted")
+    else:
+        print("-> Looking up Forecast via API - (Throttled due to rate limit)")
     if(not current % 5):
         PrintMessage(MessageType.INFO,
             "Processed [{0}] of [{1}] - [{2}] percent complete - Elapsed time [{3}]"\
@@ -365,11 +383,13 @@ def PrintSimpleSummary(data,timeSummary,description,title, debug):
         PrintMessage(MessageType.DEBUG,"{0} data [{1}]".format(description,data))
 
 
-def PrintSummary(data,attempts,failures,timeSummary,description,title, debug):
+def PrintSummary(data,attempts,failures,timeSummary,description,title, debug, skipped = 0):
     """ prints complete failure/attempt summary for step """
     print("-----------------------------------------")
     print("- STEP SUMMARY : [{0}] ".format(title))
     print("- {0} attempted [{1}]".format(description,attempts))
+    if skipped != 0:
+        print("- {0} skipped [{1}]".format(description,skipped))
     print("- {0} failures [{1}]".format(description,failures))
     print("- {0} failed: [{1}]".format(description,CalculatePercentage(failures,attempts)))
     print("- {0}".format(timeSummary))
