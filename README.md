@@ -29,8 +29,9 @@ optional arguments:
 
 ## Initial Setup
 You will need the following third party modules, just pip3 install them as needed or use the requirements.txt file as noted below:
-- requests (http://docs.python-requests.org/en/master/)
-- numpy (https://www.scipy.org/scipylib/download.html , http://www.numpy.org/)
+- requests: http://docs.python-requests.org/en/master/
+- requests-cache: http://docs.python-requests.org/en/master/ (caching options; cache to sqlite)
+- numpy: https://www.scipy.org/scipylib/download.html , http://www.numpy.org/
 
 Example pip3 install the requirements:
 ```
@@ -48,7 +49,7 @@ Note: Tested and developed on python 3.6.5 on Linux (Fedora)
 WUNDERGROUND_APIKEY = ""
 ```
 
-There are also a few other settings (constants) you may wish to set those are in the following section in the code in 'create-weather-histogram':
+There are also a few other settings (e.g. caching expirations) you may wish to set. Those are located in the following section in 'create-weather-histogram':
 ```
 ##########################################
 #- Modify the options below as needed
@@ -64,11 +65,13 @@ There are also a few other settings (constants) you may wish to set those are in
 ##### NOTE: This code was tested on Fedora Linux (python 3.6.5) - there are no guarantees it will work on other platforms.  It should but YMMV.
 
 ## Third Party Web Service APIs Used
-1 Weather Underground API 
+Weather Underground API 
 - Signup: https://www.wunderground.com/weather/api/
 - API docs: https://www.wunderground.com/weather/api/d/docs
 - API limits and tiers: https://www.wunderground.com/weather/api/d/pricing.html
 
 ## Thanks
-- requests (http://docs.python-requests.org/en/master/)
-- NumPy (https://www.scipy.org/scipylib/download.html , http://www.numpy.org/)
+- requests: http://docs.python-requests.org/en/master/
+- requests-cache: https://requests-cache.readthedocs.io/en/latest/user_guide.html
+- NumPy: https://www.scipy.org/scipylib/download.html , http://www.numpy.org/
+- Colors!!! ANSI codes in python chart: http://ozzmaker.com/add-colour-to-text-in-python/ , https://gist.github.com/minism/1590432#file-color-py

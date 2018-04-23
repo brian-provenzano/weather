@@ -1,6 +1,5 @@
-#
 ####### requirements.txt #######
-#
-###### Needed for create-weather-histogram ######
+#Needed for create-weather-histogram
 requests
+requests-cache
 numpy

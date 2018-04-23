@@ -22,12 +22,12 @@ TODOs - future features?
 - option remove header in tsv
 - 'quiet' mode to remove all console messages (server mode) - store in local std log instead
 - refactor to create messaging class (remove all the printMessage calls, more DRYish)
-- caching mechanism for IP lookups
 - retries on connection issues or non HTTP 200 returns
 """
 
 #--3rd party - see readme for pip install
 import requests
+import requests_cache
 import numpy
 
 #--std mod/libs
@@ -50,6 +50,8 @@ WUNDERGROUND_APIKEY = ""
 WUNDERGROUND_RATE_SLEEP_SECONDS = 7 #seconds to wait between calls to fail within limits (free tier set to 6-7!!)
 WUNDERGROUND_RATE_HARD_LIMIT = 500 #per day limit (so its our per run limit)
 WUNDERGROUND_CONNECT_TIMEOUT = 5 # wait no longer than 5 seconds for a response (avg is less than second)
+#requests cache - https://requests-cache.readthedocs.io/en/latest/user_guide.html (sqlite)
+REQUESTSCACHE_DBEXPIRE = 300 # cache expires after this time period in seconds (defaulting to 5 minutes)
 
 ##########################################
 #- END - Do not modify below here!!!
@@ -73,8 +75,6 @@ def Main():
     #-informational args
     parser.add_argument("-d", "--debug", action="store_true", 
             help="Debug mode - show more informational messages for debugging")
-    # parser.add_argument("-q", "--quiet", action="store_true", 
-    #         help="Do not print to console.  Output messages to a standard logfile.")
     parser.add_argument("-v", "--version", action="version", version="1.0")
     args = parser.parse_args()
 
@@ -137,7 +137,7 @@ def ParseLogFile(logFile, argparse):
     ipAddressFailures = failures
     ipAddressAttempts = len(ipList)
     timer.Stop()
-    PrintSummary(ipAddresses,ipAddressAttempts,ipAddressFailures, timer.PrintSummary("getting IPs from local logfile"),
+    PrintSummary(ipAddresses,ipAddressAttempts,ipAddressAttempts,ipAddressFailures, timer.PrintSummary("getting IPs from local logfile"),
             "Log file IPs","Processing IPs From Local Log File",argparse.debug)
 
     return ipAddresses
@@ -166,6 +166,7 @@ def GetWeatherForecast(ipAddressList,argparse):
     alreadyForecasted = {}
     failures = 0
     skipped = 0
+    cached = 0
     #must not be zero padded as wunderground API according to docs returns no pad on day
     tomorrow = int((datetime.date.today() + datetime.timedelta(days=1)).strftime('%-d'))
 
@@ -179,13 +180,19 @@ def GetWeatherForecast(ipAddressList,argparse):
                 break
 
             #if already located/forecasted the IP; skip the web API call; but still add to temp data
+            # essentially we will treat this as a INPROCESS cache (of sorts)
             if item in alreadyForecasted:
                 forecastList.append(alreadyForecasted.get(item))
-                PrintProgress(locationsCount,count,timer.GetElapsed(),True)
+                PrintProgress(locationsCount,count,timer.GetElapsed(),item,True,CacheType.INPROCESS)
                 skipped += 1
             else:
                 url = WUNDERGROUND_BASEURL.format(WUNDERGROUND_APIKEY)
-                response = requests.get(url, params={"geo_ip":item}, timeout=WUNDERGROUND_CONNECT_TIMEOUT)
+                # caching - using requests-cache
+                requests_cache.install_cache(expire_after=REQUESTSCACHE_DBEXPIRE)
+                # hook requests module for requests-cache sleep (throttle for wunderground) if not cached
+                rcache = requests_cache.CachedSession(expire_after=REQUESTSCACHE_DBEXPIRE)
+                rcache.hooks = {'response': ThrottleHook(WUNDERGROUND_RATE_SLEEP_SECONDS)}
+                response = rcache.get(url, params={"geo_ip":item}, timeout=WUNDERGROUND_CONNECT_TIMEOUT)
                 response.raise_for_status()
                 if response.status_code == 200:
                     jsonResult = response.json()
@@ -215,12 +222,14 @@ def GetWeatherForecast(ipAddressList,argparse):
                                 forecastList.append(int(jitem["high"]["fahrenheit"]))
                                 if item not in alreadyForecasted:
                                     alreadyForecasted[item] = int(jitem["high"]["fahrenheit"])
-
                                 break
+                    
+                    if response.from_cache:
+                        cached += 1
+                        PrintProgress(locationsCount,count,timer.GetElapsed(),item, True, CacheType.DISK)
+                    else:
+                        PrintProgress(locationsCount,count,timer.GetElapsed(),item)
 
-                    PrintProgress(locationsCount,count,timer.GetElapsed())
-                    #stay within rate - not perfect, but should be ok for this
-                    time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
                 else:
                     failures += 1
                     PrintMessage(MessageType.ERROR,
@@ -241,12 +250,12 @@ def GetWeatherForecast(ipAddressList,argparse):
             time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
 
     forecastFailures = failures
-    forecastSkipped = skipped
-    forecastAttempts = (locationsCount - skipped)
+    forecastCached = cached + skipped
+    forecastAttempts = locationsCount - (skipped + cached)
     timer.Stop()
-    PrintSummary(forecastList,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
+    PrintSummary(forecastList,locationsCount,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
         "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", 
-        argparse.debug,forecastSkipped)
+        argparse.debug,forecastCached)
 
     return forecastList
 
@@ -287,18 +296,31 @@ def CreateHistogram(forecastData,outputFile,buckets,argparse):
 # - Utility functions / classes
 ################################
 
+def ThrottleHook(timeout=WUNDERGROUND_RATE_SLEEP_SECONDS):
+    """
+    Returns a response (requests module) hook function which sleeps 
+    for `timeout` seconds if response is not cached 
+    to stay within rate limit wunderground weather API
+    """
+    def hook(response, *args, **kwargs):
+        if not getattr(response, 'from_cache', False):
+            time.sleep(timeout)
+        return response
+    return hook
+
+
 def IsPublicIPAddress(ipAddress, currentLine):
     """ 
     Check IP Address is private
-    Returns: validip
+    Returns: isPublicIP (is IP public or not)
     """
-    isValidIP = True
+    isPublicIP = True
     if ipAddress.is_private:
-        isValidIP = False
+        isPublicIP = False
         PrintMessage(MessageType.ERROR,
             "Invalid IP Address [{0}] found at line [ {1} ]!  Skipping line... "\
             "Please double check the logfile!".format(str(ipAddress),currentLine),"Is Private IP Address")
-    return isValidIP
+    return isPublicIP
 
 
 class MessageType(Enum):
@@ -307,6 +329,13 @@ class MessageType(Enum):
     DEBUG = 1
     INFO = 2
     ERROR = 3
+
+
+class CacheType(Enum):
+    """ Cache type enumeration"""
+    INVALID = 0
+    DISK = 1
+    INPROCESS = 2
 
 
 class SimpleTimer(object):
@@ -357,12 +386,13 @@ def Check(url,apikey):
         raise ValueError("Weather API key is empty.  Please check your config!")
 
 
-def PrintProgress(total, current,currentElapsed, skip=False):
+def PrintProgress(total, current,currentElapsed, item, cache=False, cacheType=CacheType.INVALID):
     """ prints progress for web calls """
-    if skip:
-        print("-> Skipping Forecast API call - this IP address has already been located/forecasted")
+    if cache:
+        print("-> Cached [{0}] - skipping API; this request [{1}] is from local cache".format(str(cacheType.name),item))
     else:
-        print("-> Looking up Forecast via API - (Throttled due to rate limit)")
+        print ("-> {0}".format("Looking up Forecast for [{0}] via API - (Throttled due to rate limit)".format(item)))
+    
     if(not current % 5):
         PrintMessage(MessageType.INFO,
             "Processed [{0}] of [{1}] - [{2}] percent complete - Elapsed time [{3}]"\
@@ -371,7 +401,20 @@ def PrintProgress(total, current,currentElapsed, skip=False):
 
 def PrintMessage(messageType,friendlyMessage,detailMessage="None"):
     """ prints messages in format we want """
-    print("[{0}] - {1} - More Details [{2}]".format(str(messageType.name),friendlyMessage,detailMessage))
+    if messageType == messageType.DEBUG:
+        color = fg.YELLOW
+        coloroff = style.RESET_ALL
+    elif messageType == messageType.INFO:
+        color = fg.GREEN
+        coloroff = style.RESET_ALL
+    elif messageType == messageType.ERROR:
+        color = fg.RED
+        coloroff = style.RESET_ALL
+    else:
+        color = ""
+        coloroff = ""
+
+    print("{3}[{0}] - {1} - More Details [{2}]{4}".format(str(messageType.name),friendlyMessage,detailMessage,color,coloroff))
 
 
 def PrintSimpleSummary(data,timeSummary,description,title, debug):
@@ -384,19 +427,59 @@ def PrintSimpleSummary(data,timeSummary,description,title, debug):
         PrintMessage(MessageType.DEBUG,"{0} data [{1}]".format(description,data))
 
 
-def PrintSummary(data,attempts,failures,timeSummary,description,title, debug, skipped = 0):
-    """ prints complete failure/attempt summary for step """
+def PrintSummary(data, total, attempts, failures, timeSummary, description, title, debug, cached=0):
+    """ 
+    prints complete failure/attempt summary for step 
+    ---
+    Attempts = active web API calls (this could be fraction of Total if cached)
+    Total = total that were requested to be processed (this number is TOTAL)
+    """
+    color = ""
+    coloroff = ""
     print("-----------------------------------------")
     print("- STEP SUMMARY : [{0}] ".format(title))
+    print("- {0} total [{1}]".format(description,total))
     print("- {0} attempted [{1}]".format(description,attempts))
-    if skipped != 0:
-        print("- {0} skipped [{1}]".format(description,skipped))
-    print("- {0} failures [{1}]".format(description,failures))
-    print("- {0} failed: [{1}]".format(description,CalculatePercentage(failures,attempts)))
+    if cached != 0:
+        print("- {0} cached [{1}]".format(description,cached))
+    if failures != 0:
+        color = fg.RED
+        coloroff = style.RESET_ALL
+    print("{2}- {0} failures [{1}]{3}".format(description,failures,color,coloroff))
+    print("{2}- {0} failed: [{1}]{3}".format(description,CalculatePercentage(failures,attempts),color,coloroff))
     print("- {0}".format(timeSummary))
     print("-----------------------------------------")
     if debug:
         PrintMessage(MessageType.DEBUG,"{0} data [{1}]".format(description,data))
+
+# Terminal color definitions - cheap and easy colors for this application
+class fg:
+    BLACK   = '\033[30m'
+    RED     = '\033[31m'
+    GREEN   = '\033[32m'
+    YELLOW  = '\033[33m'
+    BLUE    = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN    = '\033[36m'
+    WHITE   = '\033[37m'
+    RESET   = '\033[39m'
+
+class bg:
+    BLACK   = '\033[40m'
+    RED     = '\033[41m'
+    GREEN   = '\033[42m'
+    YELLOW  = '\033[43m'
+    BLUE    = '\033[44m'
+    MAGENTA = '\033[45m'
+    CYAN    = '\033[46m'
+    WHITE   = '\033[47m'
+    RESET   = '\033[49m'
+
+class style:
+    BRIGHT    = '\033[1m'
+    DIM       = '\033[2m'
+    NORMAL    = '\033[22m'
+    RESET_ALL = '\033[0m'
 
 
 if __name__ == '__main__':
