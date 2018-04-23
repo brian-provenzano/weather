@@ -1,6 +1,6 @@
 ## specific to this proj
-GeoLite2-City-20180403.mmdb
 test-hist*
+*.sqlite
 
 bin/*
 dist/*
