@@ -51,7 +51,7 @@ WUNDERGROUND_RATE_SLEEP_SECONDS = 7 #seconds to wait between calls to fail withi
 WUNDERGROUND_RATE_HARD_LIMIT = 500 #per day limit (so its our per run limit)
 WUNDERGROUND_CONNECT_TIMEOUT = 5 # wait no longer than 5 seconds for a response (avg is less than second)
 #requests cache - https://requests-cache.readthedocs.io/en/latest/user_guide.html (sqlite)
-REQUESTSCACHE_DBEXPIRE = 300 # cache expires after this time period in seconds (defaulting to 5 minutes)
+REQUESTSCACHE_DBEXPIRE = 600 # cache expires after this time period in seconds (600 seconds is fine for 50-100 datasets)
 
 ##########################################
 #- END - Do not modify below here!!!
@@ -75,7 +75,7 @@ def Main():
     #-informational args
     parser.add_argument("-d", "--debug", action="store_true", 
             help="Debug mode - show more informational messages for debugging")
-    parser.add_argument("-v", "--version", action="version", version="1.0")
+    parser.add_argument("-v", "--version", action="version", version="2.0")
     args = parser.parse_args()
 
     logfile = args.logfile.strip()
@@ -165,6 +165,7 @@ def GetWeatherForecast(ipAddressList,argparse):
     forecastList = []
     alreadyForecasted = {}
     failures = 0
+    attempted = 0
     skipped = 0
     cached = 0
     #must not be zero padded as wunderground API according to docs returns no pad on day
@@ -172,7 +173,7 @@ def GetWeatherForecast(ipAddressList,argparse):
 
     for count,item in enumerate(ipAddressList, start=1):
         try: 
-            if count == WUNDERGROUND_RATE_HARD_LIMIT:
+            if attempted == WUNDERGROUND_RATE_HARD_LIMIT:
                 PrintMessage(MessageType.ERROR,
                 "You are hitting (or are about to hit) the hard daily limit for the wunderground service tier! "\
                 "Halting calls to web service and building the histogram from the data we have. ",
@@ -228,6 +229,7 @@ def GetWeatherForecast(ipAddressList,argparse):
                         cached += 1
                         PrintProgress(locationsCount,count,timer.GetElapsed(),item, True, CacheType.DISK)
                     else:
+                        attempted += 1
                         PrintProgress(locationsCount,count,timer.GetElapsed(),item)
 
                 else:
@@ -244,14 +246,14 @@ def GetWeatherForecast(ipAddressList,argparse):
         #throw the base request ex so we can continue on any error from requests module
         except requests.exceptions.RequestException as re:
             failures += 1
-            PrintMessage(MessageType.ERROR, "Trying to obtain forecast for location : Timeout / httperror waiting"\
+            PrintMessage(MessageType.ERROR, "Trying to obtain forecast for location : Timeout / HTTP error waiting "\
                 "for server connection / response", re)
             #if we have an exception, I'd like to wait a little for the next try on the next item
             time.sleep(WUNDERGROUND_RATE_SLEEP_SECONDS)
 
     forecastFailures = failures
     forecastCached = cached + skipped
-    forecastAttempts = locationsCount - (skipped + cached)
+    forecastAttempts = attempted
     timer.Stop()
     PrintSummary(forecastList,locationsCount,forecastAttempts,forecastFailures, timer.PrintSummary("getting weather forecast data"),
         "Forecast High Temperature","Obtaining Next Day Forecast High Temperatures From Web Service", 
@@ -391,7 +393,7 @@ def PrintProgress(total, current,currentElapsed, item, cache=False, cacheType=Ca
     if cache:
         print("-> Cached [{0}] - skipping API; this request [{1}] is from local cache".format(str(cacheType.name),item))
     else:
-        print ("-> {0}".format("Looking up Forecast for [{0}] via API - (Throttled due to rate limit)".format(item)))
+        print ("-> Querying Forecast for [{0}] via API - (Throttle/wait [{1}] seconds due to rate limit)".format(item,WUNDERGROUND_RATE_SLEEP_SECONDS))
     
     if(not current % 5):
         PrintMessage(MessageType.INFO,
