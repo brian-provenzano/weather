@@ -1,5 +1,4 @@
-# TDD code
-Create Weather Histogram
+# Weather Histogram 
 
 ## Description
 Creates a tsv file of histogram bins of weather forecast based on logfile input (containing IP addresses) and requested bin size
