@@ -1,4 +1,7 @@
-# Weather Histogram 
+# Weather Histogram
+
+## Function
+Originally created as a lab exercise in using python and public web APIs to report / chart data 
 
 ## Description
 Creates a tsv file of histogram bins of weather forecast based on logfile input (containing IP addresses) and requested bin size
